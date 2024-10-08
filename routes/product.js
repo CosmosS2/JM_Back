@@ -67,7 +67,9 @@ router.get('/listActive', async (req, res) => {
 
 router.put('/update', async (req, res) => {
     try {
+        console.log("EN PRODUCTO: ")
         const { id, nombre, stock } = req.body;
+        console.log("DATOS EN PRODUCTO: ", id, nombre, stock)
         if (!id) {
             return res.status(400).json({ success: false, message: 'ID del producto es requerido' });
         }
@@ -96,15 +98,14 @@ router.put('/update', async (req, res) => {
     }
 });
 
-router.put('/delete', async (req, res) => {
+router.put('/delete/:id', async (req, res) => {
     try {
-        const { id } = req.body;
+        const { id }= req.params;
         if (!id) {
             return res.status(400).json({ success: false, message: 'El id del producto es requerido' });
         }
-        const estado = 0;
-        const query = 'UPDATE producto SET estado = ? WHERE id = ?';
-        await db.query(query, [estado, id]);
+        const query = 'UPDATE producto SET estado = 0 WHERE id = ?';
+        await db.query(query, [id]);
 
         return res.json({ success: true, message: 'Producto deshabilitado exitosamente' });
     } catch (err) {

@@ -26,25 +26,26 @@ router.get('/userdata', async (req, res) => {
 
 router.post('/register', async (req, res) => {
     try {
-        const { nombre_usuario, password, id_rol } = req.body;
-        if (!nombre_usuario || !password || !id_rol) {
+        const { nombre, contrasena, rol } = req.body;
+        console.log("USUARIO EN BACK: ", nombre, contrasena, rol)
+        if (!nombre || !contrasena || !rol) {
             return res.status(400).json({ success: false, message: 'Faltan datos' });
         }
 
         const usernameValidador = /^[a-zA-Z0-9_-]+$/;
-        if (!usernameValidador.test(nombre_usuario)) {
+        if (!usernameValidador.test(nombre)) {
             return res.status(400).json({ success: false, message: 'El nombre de usuario solo debe contener letras, números y/o guion medio, sin espacios.' });
         }
 
-        const [results] = await db.query('SELECT * FROM usuario WHERE nombre_usuario = ?', [nombre_usuario]);
+        const [results] = await db.query('SELECT * FROM usuario WHERE nombre_usuario = ?', [nombre]);
         if (results.length > 0) {
             return res.status(400).json({ success: false, message: 'El nombre de usuario ya está registrado' });
         }
 
-        const hashedPassword = await bcrypt.hash(password, 10);
+        const hashedPassword = await bcrypt.hash(contrasena, 10);
         const estado = 1;
         const query = 'INSERT INTO usuario (nombre_usuario, contraseña, estado, id_rol) VALUES (?, ?, ?, ?)';
-        await db.query(query, [nombre_usuario, hashedPassword, estado, id_rol]);
+        await db.query(query, [nombre, hashedPassword, estado, rol]);
 
         return res.status(201).json({ success: true, message: 'Usuario registrado exitosamente' });
     } catch (err) {
@@ -54,7 +55,7 @@ router.post('/register', async (req, res) => {
 
 router.get('/listAll', async (req, res) => {
     try {
-        const [results] = await db.query('SELECT nombre_usuario, estado, id_rol FROM usuario');
+        const [results] = await db.query('SELECT id, nombre_usuario, estado, id_rol FROM usuario');
         if (results.length > 0) {
             return res.json({ success: true, userData: results });
         } else {
@@ -100,9 +101,9 @@ router.put('/update', async (req, res) => {
     }
 });
 
-router.put('/delete', async (req, res) => {
+router.put('/delete/:id', async (req, res) => {
     try {
-        const { id } = req.body;
+        const { id } = req.params;
         if (!id) {
             return res.status(400).json({ success: false, message: 'ID del usuario es requerido' });
         }
@@ -112,6 +113,23 @@ router.put('/delete', async (req, res) => {
         await db.query(query, [estado, id]);
 
         return res.json({ success: true, message: 'Usuario deshabilitado exitosamente' });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+router.put('/active/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id) {
+            return res.status(400).json({ success: false, message: 'ID del usuario es requerido' });
+        }
+
+        const estado = 1;
+        const query = 'UPDATE usuario SET estado = ? WHERE id = ?';
+        await db.query(query, [estado, id]);
+
+        return res.json({ success: true, message: 'Usuario habilitado exitosamente' });
     } catch (err) {
         return res.status(500).json({ success: false, message: err.message });
     }
