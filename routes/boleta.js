@@ -116,14 +116,35 @@ router.get('/listAll', async (req, res) => {
     }
 });
 
-
-router.get('/getFindOne/:id_boleta', async (req, res) => {
+router.get('/listAllTicket', async (req, res) => {
     try {
-        const { id_boleta } = req.params;
+        const query = `
+            SELECT b.*, c.nombre, c.apellido, u.nombre_usuario 
+            FROM boleta b
+            JOIN cliente c ON b.id_cliente = c.id 
+            JOIN usuario u ON b.id_usuario = u.id 
+        `;
+
+        const [results] = await db.query(query);
+
+        if (results.length > 0) {
+            return res.json({ success: true, ventasData: results });
+        } else {
+            return res.json({ success: false, message: 'No se encontraron ventas' });
+        }
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+
+router.get('/getFindOne/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
         const boletaQuery = `
             SELECT * FROM boleta WHERE id = ?
         `;
-        const [boletaResult] = await db.query(boletaQuery, [id_boleta]);
+        const [boletaResult] = await db.query(boletaQuery, [id]);
 
         if (boletaResult.length === 0) {
             return res.status(404).json({ success: false, message: 'Boleta no encontrada' });
@@ -131,7 +152,7 @@ router.get('/getFindOne/:id_boleta', async (req, res) => {
         const productosQuery = `
             SELECT * FROM productoboleta WHERE id_boleta = ?
         `;
-        const [productosResult] = await db.query(productosQuery, [id_boleta]);
+        const [productosResult] = await db.query(productosQuery, [id]);
         const response = {
             boleta: boletaResult[0],
             productos: productosResult

@@ -78,6 +78,7 @@ router.get('/listActive', async (req, res) => {
 router.put('/update', async (req, res) => {
     try {
         const { rut, nombre, apellido, telefono, correo } = req.body;
+        console.log("DATOS EN CLIENTE: ", rut, nombre, apellido, telefono, correo)
         if (!rut || !nombre || !apellido || !telefono || !correo) {
             return res.status(400).json({ success: false, message: 'Faltan datos' });
         }
@@ -91,9 +92,10 @@ router.put('/update', async (req, res) => {
     }
 });
 
-router.put('/delete', async (req, res) => {
+router.put('/delete/:rut', async (req, res) => {
     try {
-        const { rut } = req.body;
+        const { rut } = req.params;
+        console.log("RUT DE CLIENTE A ELIMINAR: ", rut)
         if (!rut) {
             return res.status(400).json({ success: false, message: 'El RUT del cliente es requerido' });
         }
@@ -103,6 +105,24 @@ router.put('/delete', async (req, res) => {
         await db.query(query, [estado, rutFormateado]);
 
         return res.json({ success: true, message: 'Cliente deshabilitado exitosamente' });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+router.put('/Active/:rut', async (req, res) => {
+    try {
+        const { rut } = req.params;
+        console.log("RUT DE CLIENTE A habilitar: ", rut)
+        if (!rut) {
+            return res.status(400).json({ success: false, message: 'El RUT del cliente es requerido' });
+        }
+        const estado = 1;
+        const rutFormateado = formatearRut(rut);
+        const query = 'UPDATE cliente SET estado = ? WHERE rut = ?';
+        await db.query(query, [estado, rutFormateado]);
+
+        return res.json({ success: true, message: 'Cliente habilitado exitosamente' });
     } catch (err) {
         return res.status(500).json({ success: false, message: err.message });
     }
