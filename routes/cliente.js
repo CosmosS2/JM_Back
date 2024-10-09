@@ -13,7 +13,7 @@ router.get('/clientData/:rut', async (req, res) => {
         const [results] = await db.query('SELECT rut, nombre, apellido, telefono, correo FROM cliente WHERE rut = ?', [rutFormateado]);
 
         if (results.length > 0) {
-            const userData = results[0];
+            const userData = results[0]; // Cambié 'data' por 'userData'
             return res.json({ success: true, userData });
         } else {
             return res.json({ success: false, message: 'Cliente no encontrado' });
