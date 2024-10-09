@@ -91,21 +91,29 @@ router.put('/update', async (req, res) => {
     }
 });
 
-router.put('/delete', async (req, res) => {
+router.delete('/delete', async (req, res) => {
     try {
-        const { rut } = req.body;
+        const { rut } = req.body; // Mantemos a estrutura do corpo
         if (!rut) {
             return res.status(400).json({ success: false, message: 'El RUT del cliente es requerido' });
         }
-        const estado = 0;
+
+        const estado = 0; // Se você quiser marcar o cliente como desabilitado
         const rutFormateado = formatearRut(rut);
         const query = 'UPDATE cliente SET estado = ? WHERE rut = ?';
-        await db.query(query, [estado, rutFormateado]);
+        
+        const result = await db.query(query, [estado, rutFormateado]);
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ success: false, message: 'Cliente no encontrado' });
+        }
 
         return res.json({ success: true, message: 'Cliente deshabilitado exitosamente' });
     } catch (err) {
         return res.status(500).json({ success: false, message: err.message });
     }
 });
+
+
 
 module.exports = router;
