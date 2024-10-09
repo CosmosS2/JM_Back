@@ -3,14 +3,14 @@ const router = express.Router();
 const { validarRut, formatearRut } = require('../helpers/validador');
 const { db } = require('../config/dbConfig');
 
-router.get('/clientData', async (req, res) => {
+router.get('/clientData/:rut', async (req, res) => {
     try {
-        const { rut } = req.query;
+        const { rut } = req.params;
         if (!validarRut(rut)) {
             return res.status(400).json({ success: false, message: 'RUT inválido' });
         }
         const rutFormateado = formatearRut(rut);
-        const [results] = await db.query('SELECT nombre, apellido, telefono, correo FROM cliente WHERE rut = ?', [rutFormateado]);
+        const [results] = await db.query('SELECT rut, nombre, apellido, telefono, correo FROM cliente WHERE rut = ?', [rutFormateado]);
 
         if (results.length > 0) {
             const userData = results[0];
