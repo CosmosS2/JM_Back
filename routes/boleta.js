@@ -53,8 +53,60 @@ router.post('/generarCalculation', async (req, res) => {
         return res.status(500).json({ success: false, message: err.message });
     }
 });
-
 router.post('/generateTicket', async (req, res) => {
+    const venta = req.body;
+
+    try {
+        // 1. Consultar la ID del cliente utilizando el RUT
+        const [cliente] = await db.query('SELECT id FROM cliente WHERE rut = ?', [venta.rut]);
+
+        if (!cliente || cliente.length === 0) { // Verifica que el cliente sea encontrado
+            return res.status(404).json({ success: false, message: 'Cliente no encontrado.' });
+        }
+
+        const idCliente = cliente[0].id; // Obtener el id del cliente
+
+        // 2. Verificar si el usuario existe
+        const [usuario] = await db.query('SELECT * FROM usuario WHERE id = ?', [venta.idUsuario]);
+        if (!usuario || usuario.length === 0) { // Verifica que el usuario sea encontrado
+            return res.status(404).json({ success: false, message: 'Usuario no encontrado.' });
+        }
+
+        // 3. Registrar en la tabla boleta
+        const [resultBoleta] = await db.query(
+            'INSERT INTO boleta (id_cliente, valor_total, valor_pagado, cantidad_total_productos, id_usuario, metodo_pago, estado) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [idCliente, venta.totalCompra, venta.totalCancelado, venta.cantidadTotalProductos, venta.idUsuario, venta.metodoPago, 1]
+        );
+
+        const idBoleta = resultBoleta.insertId; // Capturar la ID de la boleta registrada
+
+        // 4. Registrar en la tabla productoboleta para cada producto
+        for (const producto of venta.productos) {
+            await db.query(
+                'INSERT INTO productoboleta (id_producto, id_boleta, cantidad, monto_unitario_cobrado) VALUES (?, ?, ?, ?)',
+                [producto.id, idBoleta, producto.cantidad, producto.montoUnitario]
+            );
+        }
+
+        // 5. Si el total cancelado es menor al total compra, registrar en la tabla deuda_cliente
+        if (venta.totalCancelado < venta.totalCompra) {
+            const montoDeuda = venta.totalCompra - venta.totalCancelado;
+
+            await db.query(
+                'INSERT INTO deudacliente (id_boleta, monto_deuda) VALUES (?, ?)',
+                [idBoleta, montoDeuda]
+            );
+        }
+
+        return res.status(201).json({ success: true, message: 'Venta registrada correctamente.' });
+    } catch (err) {
+        console.error('Error al registrar la venta:', err);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+
+router.post('/generateTicketa', async (req, res) => {
     try {
         const { productos, id_cliente, valor_pagado, id_usuario, metodo_pago } = req.body;
 
