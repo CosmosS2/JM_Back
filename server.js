@@ -15,7 +15,11 @@ require('dotenv').config();
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+    methods: ['GET', 'POST', 'PUT'], 
+    allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
 
 app.use(morgan('combined'));
 

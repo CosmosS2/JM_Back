@@ -25,13 +25,13 @@ router.get('/productData', async (req, res) => {
 
 router.post('/register', async (req, res) => {
     try {
-        const { nombre, stock } = req.body;
-        if (!nombre || !stock) {
+        const { nombre, stock, ubicacion } = req.body;
+        if (!nombre || !stock || !ubicacion) {
             return res.status(400).json({ success: false, message: 'Faltan datos' });
         }
         const estado = 1;
-        const query = 'INSERT INTO producto (nombre, stock, estado) VALUES (?, ?, ?)';
-        await db.query(query, [nombre, stock, estado]);
+        const query = 'INSERT INTO producto (nombre, stock, estado, ubicacion) VALUES (?, ?, ?, ?)';
+        await db.query(query, [nombre, stock, estado, ubicacion]);
 
         return res.status(201).json({ success: true, message: 'Producto registrado exitosamente' });
     } catch (err) {

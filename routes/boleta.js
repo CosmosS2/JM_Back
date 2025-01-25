@@ -55,7 +55,7 @@ router.post('/generarCalculation', async (req, res) => {
 });
 router.post('/generateTicket', async (req, res) => {
     const venta = req.body;
-
+    console.log("VENTA EN BACK: ", venta)
     try {
         // 1. Consultar la ID del cliente utilizando el RUT
         const [cliente] = await db.query('SELECT id FROM cliente WHERE rut = ?', [venta.rut]);
@@ -86,9 +86,34 @@ router.post('/generateTicket', async (req, res) => {
                 'INSERT INTO productoboleta (id_producto, id_boleta, cantidad, monto_unitario_cobrado) VALUES (?, ?, ?, ?)',
                 [producto.id, idBoleta, producto.cantidad, producto.montoUnitario]
             );
+
+            // 5. Consultar el stock actual del producto
+            const [productoData] = await db.query(
+                'SELECT stock FROM producto WHERE id = ?',
+                [producto.id]
+            );
+
+            if (!productoData || productoData.length === 0) {
+                return res.status(404).json({ success: false, message: `Producto con ID ${producto.id} no encontrado.` });
+            }
+
+            const stockActual = productoData[0].stock;
+
+            // 6. Calcular el nuevo stock
+            const nuevoStock = stockActual - producto.cantidad;
+
+            if (nuevoStock < 0) {
+                return res.status(400).json({ success: false, message: `Stock insuficiente para el producto ${producto.nombre}.` });
+            }
+
+            // 7. Actualizar el stock del producto
+            await db.query(
+                'UPDATE producto SET stock = ? WHERE id = ?',
+                [nuevoStock, producto.id]
+            );
         }
 
-        // 5. Si el total cancelado es menor al total compra, registrar en la tabla deuda_cliente
+        // 8. Si el total cancelado es menor al total compra, registrar en la tabla deuda_cliente
         if (venta.totalCancelado < venta.totalCompra) {
             const montoDeuda = venta.totalCompra - venta.totalCancelado;
 
@@ -98,7 +123,7 @@ router.post('/generateTicket', async (req, res) => {
             );
         }
 
-        return res.status(201).json({ success: true, message: 'Venta registrada correctamente.' });
+        return res.status(201).json({ success: true, message: 'Venta registrada correctamente y stock actualizado.' });
     } catch (err) {
         console.error('Error al registrar la venta:', err);
         return res.status(500).json({ success: false, message: err.message });
