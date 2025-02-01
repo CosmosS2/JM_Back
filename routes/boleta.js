@@ -57,25 +57,13 @@ router.post('/generateTicket', async (req, res) => {
     const venta = req.body;
     console.log("VENTA EN BACK: ", venta)
     try {
-        // 1. Consultar la ID del cliente utilizando el RUT
-        const [cliente] = await db.query('SELECT id FROM cliente WHERE rut = ?', [venta.rut]);
-
-        if (!cliente || cliente.length === 0) { // Verifica que el cliente sea encontrado
-            return res.status(404).json({ success: false, message: 'Cliente no encontrado.' });
-        }
-
-        const idCliente = cliente[0].id; // Obtener el id del cliente
-
-        // 2. Verificar si el usuario existe
         const [usuario] = await db.query('SELECT * FROM usuario WHERE id = ?', [venta.idUsuario]);
-        if (!usuario || usuario.length === 0) { // Verifica que el usuario sea encontrado
+        if (!usuario || usuario.length === 0) {
             return res.status(404).json({ success: false, message: 'Usuario no encontrado.' });
         }
-
-        // 3. Registrar en la tabla boleta
         const [resultBoleta] = await db.query(
             'INSERT INTO boleta (id_cliente, valor_total, valor_pagado, cantidad_total_productos, id_usuario, metodo_pago, estado) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [idCliente, venta.totalCompra, venta.totalCancelado, venta.cantidadTotalProductos, venta.idUsuario, venta.metodoPago, 1]
+            [venta.idCliente, venta.totalCompra, venta.totalCancelado, venta.cantidadTotalProductos, venta.idUsuario, venta.metodoPago, 1]
         );
 
         const idBoleta = resultBoleta.insertId; // Capturar la ID de la boleta registrada

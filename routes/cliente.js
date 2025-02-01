@@ -37,11 +37,6 @@ router.post('/register', async (req, res) => {
         if (rutFormateado !== 'Sin rut' && !validarRut(rutFormateado)) {
             return res.status(400).json({ success: false, message: 'RUT inválido' });
         }
-
-        const [results] = await db.query('SELECT * FROM cliente WHERE rut = ?', [rutFormateado]);
-        if (results.length > 0) {
-            return res.status(400).json({ success: false, message: 'El cliente ya está registrado' });
-        }
         const estado = 1;
         const query = 'INSERT INTO cliente (rut, nombre, apellido, telefono, correo, estado) VALUES (?, ?, ?, ?, ?, ?)';
         await db.query(query, [rutFormateado, nombre, apellido, telefono, correo, estado]);
