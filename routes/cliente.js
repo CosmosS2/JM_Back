@@ -3,22 +3,19 @@ const router = express.Router();
 const { validarRut, formatearRut } = require("../helpers/validador");
 const { db, connectToDatabase } = require("../config/dbConfig");
 
-router.get("/clientData/:rut", async (req, res) => {
+router.get("/clientData/:id", async (req, res) => {
   try {
     await connectToDatabase();
-    const { rut } = req.params;
-    if (!validarRut(rut)) {
-      return res.status(400).json({ success: false, message: "RUT inválido" });
-    }
-    const rutFormateado = formatearRut(rut);
+    const { id } = req.params;
+
     const [results] = await db.query(
-      "SELECT rut, nombre, apellido, telefono, correo FROM cliente WHERE rut = ?",
-      [rutFormateado]
+      "SELECT rut, nombre, apellido, telefono, correo FROM cliente WHERE id = ?",
+      [id]
     );
 
     if (results.length > 0) {
-      const userData = results[0];
-      return res.json({ success: true, userData });
+      const clientData = results[0];
+      return res.json({ success: true, clientData });
     } else {
       return res.json({ success: false, message: "Cliente no encontrado" });
     }
