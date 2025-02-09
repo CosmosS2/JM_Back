@@ -33,4 +33,5 @@ connectToDatabase().then(() => {
     });
 }).catch(err => {
     console.error('No se pudo conectar a la base de datos. No se inicia el servidor.');
+    console.error(err); 
 });
