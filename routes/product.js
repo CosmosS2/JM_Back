@@ -27,7 +27,6 @@ router.post("/register", async (req, res) => {
   try {
     const { nombre, stock, ubicacion } = req.body;
 
-    // Validaciones
     if (!nombre || stock === undefined || ubicacion === undefined) {
       return res
         .status(400)
@@ -36,36 +35,59 @@ router.post("/register", async (req, res) => {
 
     const estado = 1;
     const ubicacionNum = Number(ubicacion);
+    let id_producto;
 
-    console.log("UBICACION:", ubicacionNum);
-    console.log("NOMBRE:", nombre);
-    console.log("STOCK:", stock);
+    console.log(
+      "📌 Registrando producto:",
+      nombre,
+      "Stock:",
+      stock,
+      "Ubicación:",
+      ubicacionNum
+    );
 
-    const productoBodega =
-      "INSERT INTO productobodega (nombre, stock, estado) VALUES (?, ?, ?)";
-    const productoParque =
-      "INSERT INTO productoparque (nombre, stock, estado) VALUES (?, ?, ?)";
+    // 🔹 Si se agrega en bodega, se registra también en parque con stock 0
+    if (ubicacionNum === 1) {
+      const [result] = await db.query(
+        "INSERT INTO productobodega (nombre, stock, estado) VALUES (?, ?, ?)",
+        [nombre, stock, estado]
+      );
+      id_producto = result.insertId;
 
-    switch (ubicacionNum) {
-      case 1:
-        await db.query(productoBodega, [nombre, stock, estado]);
-        await db.query(productoParque, [nombre, 0, estado]);
-        break;
-      case 2:
-        await db.query(productoParque, [nombre, stock, estado]);
-        await db.query(productoBodega, [nombre, 0, estado]);
-        break;
-      default:
-        return res
-          .status(400)
-          .json({ success: false, message: "Ubicación no válida" });
+      await db.query(
+        "INSERT INTO productoparque (id, nombre, stock, estado) VALUES (?, ?, ?, ?)",
+        [id_producto, nombre, 0, estado]
+      );
     }
+    // 🔹 Si se agrega en parque, se registra también en bodega con stock 0
+    else if (ubicacionNum === 2) {
+      const [result] = await db.query(
+        "INSERT INTO productoparque (nombre, stock, estado) VALUES (?, ?, ?)",
+        [nombre, stock, estado]
+      );
+      id_producto = result.insertId;
+
+      await db.query(
+        "INSERT INTO productobodega (id, nombre, stock, estado) VALUES (?, ?, ?, ?)",
+        [id_producto, nombre, 0, estado]
+      );
+    } else {
+      return res
+        .status(400)
+        .json({ success: false, message: "Ubicación no válida" });
+    }
+
+    // ✅ Registrar el ingreso en movimientosproductos
+    await db.query(
+      "INSERT INTO movimientosproductos (id_producto, tipo_movimiento, cantidad, origen) VALUES (?, 'ingreso', ?, ?)",
+      [id_producto, stock, ubicacionNum === 1 ? "bodega" : "parque"]
+    );
 
     return res
       .status(200)
       .json({ success: true, message: "Producto registrado exitosamente" });
   } catch (err) {
-    console.error("Error en /register:", err);
+    console.error("❌ Error en /register:", err);
     return res.status(500).json({
       success: false,
       message: "Error en el servidor",
@@ -106,6 +128,57 @@ router.get("/listAllParque", async (req, res) => {
   }
 });
 
+router.put("/transferABodega", async (req, res) => {
+  try {
+    console.log("Transferencia a bodega iniciada:");
+    const { id, cantidad, stock } = req.body;
+    console.log("Datos recibidos:", id, cantidad, stock);
+
+    if (!cantidad || cantidad > stock) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Cantidad inválida para transferir" });
+    }
+
+    const [productosBodega] = await db.query(
+      "SELECT stock FROM productobodega WHERE id = ?",
+      [id]
+    );
+    if (productosBodega.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: `No se encontró un producto en la bodega con el ID ${id}`,
+      });
+    }
+
+    const nuevoStockBodega = productosBodega[0].stock + cantidad;
+    await db.query(
+      "UPDATE productobodega SET stock = ?, estado = 1 WHERE id = ?",
+      [nuevoStockBodega, id]
+    );
+
+    const nuevoStockParque = stock - cantidad;
+    await db.query(
+      "UPDATE productoparque SET stock = ?, estado = 1 WHERE id = ?",
+      [nuevoStockParque, id]
+    );
+
+    // Registrar transferencia en movimientosproductos
+    await db.query(
+      "INSERT INTO movimientosproductos (id_producto, tipo_movimiento, cantidad, origen, destino) VALUES (?, 'transferencia', ?, 'parque', 'bodega')",
+      [id, cantidad]
+    );
+
+    return res.json({
+      success: true,
+      message: "Producto transferido exitosamente a la bodega",
+    });
+  } catch (err) {
+    console.error("Error en transferencia a bodega:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 router.get("/listActiveBodega", async (req, res) => {
   try {
     const [results] = await db.query(
@@ -142,139 +215,115 @@ router.get("/listActiveParque", async (req, res) => {
   }
 });
 
+router.put("/transferAParque", async (req, res) => {
+  try {
+    console.log("Transferencia a parque iniciada:");
+    const { id, cantidad, stock } = req.body;
+    console.log("Datos recibidos:", id, cantidad, stock);
+
+    if (!cantidad || cantidad > stock) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Cantidad inválida para transferir" });
+    }
+
+    const [productosParque] = await db.query(
+      "SELECT stock FROM productoparque WHERE id = ?",
+      [id]
+    );
+    if (productosParque.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: `No se encontró un producto en el parque con el ID ${id}`,
+      });
+    }
+
+    const nuevoStockParque = productosParque[0].stock + cantidad;
+    await db.query(
+      "UPDATE productoparque SET stock = ?, estado = 1 WHERE id = ?",
+      [nuevoStockParque, id]
+    );
+
+    const nuevoStockBodega = stock - cantidad;
+    await db.query(
+      "UPDATE productobodega SET stock = ?, estado = 1 WHERE id = ?",
+      [nuevoStockBodega, id]
+    );
+
+    // Registrar transferencia en movimientosproductos
+    await db.query(
+      "INSERT INTO movimientosproductos (id_producto, tipo_movimiento, cantidad, origen, destino) VALUES (?, 'transferencia', ?, 'bodega', 'parque')",
+      [id, cantidad]
+    );
+
+    return res.json({
+      success: true,
+      message: "Producto transferido exitosamente al parque",
+    });
+  } catch (err) {
+    console.error("Error en transferencia a parque:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 router.put("/updateStockBodega", async (req, res) => {
   try {
-    console.log("EN PRODUCTO: ");
+    console.log("🚀 Actualizando stock en bodega:");
     const { id, nombre, stock } = req.body;
-    console.log("DATOS EN PRODUCTO: ", id, nombre, stock);
-    if (!id) {
+
+    if (!id || stock === undefined) {
       return res
         .status(400)
-        .json({ success: false, message: "ID del producto es requerido" });
+        .json({ success: false, message: "Faltan datos obligatorios" });
     }
-    let query = "UPDATE productoBodega SET";
-    const values = [];
+
+    // Obtener stock actual antes de actualizarlo
+    const [producto] = await db.query(
+      "SELECT stock FROM productobodega WHERE id = ?",
+      [id]
+    );
+
+    if (producto.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Producto no encontrado" });
+    }
+
+    const stockAnterior = producto[0].stock;
+    const diferenciaStock = stock - stockAnterior;
+    const tipoMovimiento = diferenciaStock > 0 ? "ingreso" : "egreso";
+
+    // ✅ Actualizar stock en la base de datos
+    let query = "UPDATE productobodega SET stock = ?";
+    const values = [stock];
+
     if (nombre) {
-      query += " nombre = ?";
+      query += ", nombre = ?";
       values.push(nombre);
     }
-    if (stock !== undefined && stock !== null) {
-      if (values.length > 0) {
-        query += ",";
-      }
-      query += " stock = ?";
-      values.push(stock);
-    }
-    if (values.length === 0) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Nada para actualizar" });
-    }
+
     query += " WHERE id = ?";
     values.push(id);
+
     await db.query(query, values);
+
+    // ✅ Registrar en movimientosproductos
+    await db.query(
+      "INSERT INTO movimientosproductos (id_producto, tipo_movimiento, cantidad, origen) VALUES (?, ?, ?, 'bodega')",
+      [id, tipoMovimiento, Math.abs(diferenciaStock)]
+    );
+
     return res.json({
       success: true,
-      message: "Producto actualizado exitosamente",
+      message: "Stock actualizado correctamente en bodega",
     });
   } catch (err) {
+    console.error("❌ Error en /updateStockBodega:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.put("/updateStockParque", async (req, res) => {
-  try {
-    console.log("EN PRODUCTO: ");
-    const { id, nombre, stock } = req.body;
-    console.log("DATOS EN PRODUCTO: ", id, nombre, stock);
-    if (!id) {
-      return res
-        .status(400)
-        .json({ success: false, message: "ID del producto es requerido" });
-    }
-    let query = "UPDATE productoParque SET";
-    const values = [];
-    if (nombre) {
-      query += " nombre = ?";
-      values.push(nombre);
-    }
-    if (stock !== undefined && stock !== null) {
-      if (values.length > 0) {
-        query += ",";
-      }
-      query += " stock = ?";
-      values.push(stock);
-    }
-    if (values.length === 0) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Nada para actualizar" });
-    }
-    query += " WHERE id = ?";
-    values.push(id);
-    await db.query(query, values);
-    return res.json({
-      success: true,
-      message: "Producto actualizado exitosamente",
-    });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-router.put("/transfer", async (req, res) => {
-  try {
-    console.log("EN PRODUCTO TRANSFER: ");
-    const { id, cantidad, stock, ubicacion, nombre } = req.body;
-    console.log("DATOS EN PRODUCTO: ", id, cantidad, stock, ubicacion);
-    if (!cantidad) {
-      return res.status(400).json({
-        success: false,
-        message: "La cantidad del producto a transferir es requerido",
-      });
-    }
-    if (cantidad > stock) {
-      return res.status(400).json({
-        success: false,
-        message: "La cantidad a transferir es mayor a la del stock actual",
-      });
-    }
-    const [productosParque] = await db.query(
-      "SELECT id, stock FROM producto WHERE ubicacion = ?",
-      [2]
-    );
-    if (productosParque != 0) {
-      console.log("NUEVO PRODUCTO EN PARQUE: CANTIDAD = ", cantidad);
-      //await db.query(
-      //'INSERT INTO producto (nombre, stock, estado, ubicacion) VALUES (?, ?, ?, ?)',
-      //[nombre, cantidad, 1, 2]
-      //);
-    } else {
-      const nuevoStockParque = productosParque.stock + cantidad;
-      console.log(
-        "PRODUCTO ENCONTRADO EN PARQUE CON ID: ",
-        productosParque.id,
-        " CANTIDAD QUE HABIA: ",
-        productosParque.stock,
-        " cantidad nueva: ",
-        nuevoStockParque
-      );
-      //await db.query('UPDATE producto SET stock = ? WHERE id = ?', [nuevoStockParque, id]);
-    }
-    const nuevoStockBodega = stock - cantidad;
-    console.log(
-      "NUEVO STOCK EN PRODUCTOS BODEGA LUEGO DE TRANSFERIR: ",
-      nuevoStockBodega
-    );
-    //await db.query('UPDATE producto SET stock = ? WHERE id = ?', [nuevoStockBodega, id]);
-    //return res.json({ success: true, message: 'Producto transferido exitosamente' });
-    //await db.query(query, values);
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-router.put("/delete/:id", async (req, res) => {
+router.put("/deleteProductBodega/:id", async (req, res) => {
   try {
     const { id } = req.params;
     if (!id) {
@@ -282,7 +331,8 @@ router.put("/delete/:id", async (req, res) => {
         .status(400)
         .json({ success: false, message: "El id del producto es requerido" });
     }
-    const query = "UPDATE producto SET estado = 0 WHERE id = ?";
+    const query =
+      "UPDATE productobodega SET estado = 0, stock = 0 WHERE id = ?";
     await db.query(query, [id]);
 
     return res.json({
@@ -294,154 +344,134 @@ router.put("/delete/:id", async (req, res) => {
   }
 });
 
-router.post("/productEntry", async (req, res) => {
+router.put("/deleteProductParque/:id", async (req, res) => {
   try {
-    const { id_producto, cantidad, id_usuario } = req.body;
-    if (!id_producto || !cantidad || !id_usuario) {
-      return res.status(400).json({ success: false, message: "Faltan datos" });
-    }
-    const [results] = await db.query(
-      "SELECT stock, estado FROM producto WHERE id = ?",
-      [id_producto]
-    );
-    if (results.length > 0) {
-      const { stock: stockActual, estado } = results[0];
-      if (estado === 1) {
-        const nuevoStock = stockActual + cantidad;
-        await db.query("UPDATE producto SET stock = ? WHERE id = ?", [
-          nuevoStock,
-          id_producto,
-        ]);
-        await db.query(
-          "INSERT INTO ingresoproductos (id_producto, cantidad, id_usuario) VALUES (?, ?, ?)",
-          [id_producto, cantidad, id_usuario]
-        );
-
-        return res
-          .status(201)
-          .json({ success: true, message: "Ingreso registrado exitosamente" });
-      } else {
-        return res.status(403).json({
-          success: false,
-          message: "El producto no está disponible para ingreso",
-        });
-      }
-    } else {
+    const { id } = req.params;
+    if (!id) {
       return res
-        .status(404)
-        .json({ success: false, message: "Producto no encontrado" });
+        .status(400)
+        .json({ success: false, message: "El id del producto es requerido" });
     }
+    const query =
+      "UPDATE productoparque SET estado = 0, stock = 0 WHERE id = ?";
+    await db.query(query, [id]);
+
+    return res.json({
+      success: true,
+      message: "Producto deshabilitado exitosamente",
+    });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.get("/listProductEntry", async (req, res) => {
+router.put("/updateStockParque", async (req, res) => {
   try {
-    const query = `
-            SELECT 
-                ip.id, 
-                ip.cantidad, 
-                p.nombre AS nombre_producto, 
-                u.nombre_usuario 
-            FROM ingresoproductos ip
-            JOIN producto p ON ip.id_producto = p.id
-            JOIN usuario u ON ip.id_usuario = u.id
-        `;
+    console.log("🚀 Actualizando stock en parque:");
+    const { id, nombre, stock } = req.body;
 
-    const [results] = await db.query(query);
-
-    if (results.length > 0) {
-      return res.json({ success: true, data: results });
-    } else {
-      return res.json({
-        success: false,
-        message: "No se encontraron registros",
-      });
+    if (!id || stock === undefined) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Faltan datos obligatorios" });
     }
+
+    // Obtener stock actual antes de actualizarlo
+    const [producto] = await db.query(
+      "SELECT stock FROM productoparque WHERE id = ?",
+      [id]
+    );
+
+    if (producto.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Producto no encontrado" });
+    }
+
+    const stockAnterior = producto[0].stock;
+    const diferenciaStock = stock - stockAnterior;
+    const tipoMovimiento = diferenciaStock > 0 ? "ingreso" : "egreso";
+
+    // ✅ Actualizar stock en la base de datos
+    let query = "UPDATE productoparque SET stock = ?";
+    const values = [stock];
+
+    if (nombre) {
+      query += ", nombre = ?";
+      values.push(nombre);
+    }
+
+    query += " WHERE id = ?";
+    values.push(id);
+
+    await db.query(query, values);
+
+    // ✅ Registrar en movimientosproductos
+    await db.query(
+      "INSERT INTO movimientosproductos (id_producto, tipo_movimiento, cantidad, origen) VALUES (?, ?, ?, 'parque')",
+      [id, tipoMovimiento, Math.abs(diferenciaStock)]
+    );
+
+    return res.json({
+      success: true,
+      message: "Stock actualizado correctamente en parque",
+    });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error("❌ Error en /updateStockParque:", err);
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.get("/productEntryRange", async (req, res) => {
+router.get("/listMovimientos", async (req, res) => {
   try {
-    const { desde, hasta } = req.body;
-    if (!desde || !hasta) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Faltan las fechas desde y hasta" });
-    }
-    const desdeFecha = `${desde} 00:00:00`;
-    const hastaFecha = `${hasta} 23:59:59`;
-    const query = `
-            SELECT 
-                ip.id_producto, 
-                ip.cantidad, 
-                ip.id_usuario, 
-                p.nombre AS nombre_producto, 
-                u.nombre_usuario 
-            FROM ingresoproductos ip
-            JOIN producto p ON ip.id_producto = p.id
-            JOIN usuario u ON ip.id_usuario = u.id
-            WHERE ip.createdAt >= ? AND ip.createdAt <= ?
-        `;
+    console.log("📌 Obteniendo lista de movimientos de productos...");
+    const [results] = await db.query(
+      `SELECT m.id, m.id_producto, p.nombre AS nombre_producto, 
+              m.tipo_movimiento, m.cantidad, m.origen, m.destino, m.createdAt
+       FROM movimientosproductos m
+       JOIN (SELECT id, nombre FROM productobodega UNION SELECT id, nombre FROM productoparque) p
+       ON m.id_producto = p.id
+       ORDER BY m.createdAt DESC`
+    );
+    console.log("resultado movimientos: ", results);
 
-    const [results] = await db.query(query, [desdeFecha, hastaFecha]);
-
-    if (results.length > 0) {
-      return res.json({ success: true, data: results });
-    } else {
-      return res.json({
-        success: false,
-        message: "No se encontraron registros en el rango de fechas dado",
-      });
-    }
+    return res.json({ success: true, data: results });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error("❌ Error al obtener movimientos de productos:", err);
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.get("/productEntryIdRange", async (req, res) => {
+router.get("/listMovimientosPorProducto", async (req, res) => {
   try {
-    const { id_producto, desde, hasta } = req.body;
-    if (!desde || !hasta || !id_producto) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Faltan datos para la consulta" });
-    }
-    const desdeFecha = `${desde} 00:00:00`;
-    const hastaFecha = `${hasta} 23:59:59`;
-    const query = `
-            SELECT 
-                ip.id_producto, 
-                ip.cantidad, 
-                ip.id_usuario, 
-                p.nombre AS nombre_producto, 
-                u.nombre_usuario 
-            FROM ingresoproductos ip
-            JOIN producto p ON ip.id_producto = p.id
-            JOIN usuario u ON ip.id_usuario = u.id
-            WHERE ip.createdAt >= ? AND ip.createdAt <= ?
-            AND p.id = ?
-        `;
+    const { id_producto, desde, hasta } = req.query;
 
-    const [results] = await db.query(query, [
-      desdeFecha,
-      hastaFecha,
-      id_producto,
-    ]);
-
-    if (results.length > 0) {
-      return res.json({ success: true, data: results });
-    } else {
-      return res.json({
+    if (!id_producto || !desde || !hasta) {
+      return res.status(400).json({
         success: false,
-        message: "No se encontraron registros en el rango de fechas dado",
+        message: "Faltan parámetros (id_producto, desde, hasta)",
       });
     }
+
+    console.log(
+      `📌 Filtrando movimientos del producto ${id_producto} entre ${desde} y ${hasta}...`
+    );
+
+    const [results] = await db.query(
+      `SELECT m.id, m.id_producto, p.nombre AS nombre_producto, 
+              m.tipo_movimiento, m.cantidad, m.origen, m.createdAt
+       FROM movimientosproductos m
+       JOIN (SELECT id, nombre FROM productobodega UNION SELECT id, nombre FROM productoparque) p
+       ON m.id_producto = p.id
+       WHERE m.id_producto = ? 
+       AND m.createdAt BETWEEN ? AND ?
+       ORDER BY m.createdAt DESC`,
+      [id_producto, `${desde} 00:00:00`, `${hasta} 23:59:59`]
+    );
+    return res.json({ success: true, data: results });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error("❌ Error al obtener movimientos por producto:", err);
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 

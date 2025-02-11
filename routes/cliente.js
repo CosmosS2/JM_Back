@@ -28,7 +28,7 @@ router.post("/register", async (req, res) => {
   try {
     const { rut, nombre, apellido, telefono, correo } = req.body;
 
-    if (!nombre || !apellido || !telefono || !correo) {
+    if (!nombre || !apellido || !telefono) {
       return res.status(400).json({ success: false, message: "Faltan datos" });
     }
 

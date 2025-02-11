@@ -2,228 +2,427 @@ const express = require("express");
 const router = express.Router();
 const { db, connectToDatabase } = require("../config/dbConfig");
 
-router.get("/ticketData/:id_boleta", async (req, res) => {
+// 📌 Registrar una Nueva Boleta
+router.post("/createBoleta", async (req, res) => {
+  const connection = await connectToDatabase(); // 🔄 Obtener conexión
   try {
-    const { id_boleta } = req.params;
-    console.log("ID: ", id_boleta);
-    if (!id_boleta) {
+    console.log("🚀 Creando Boleta:", req.body);
+    const {
+      idCliente,
+      totalCompra,
+      totalCancelado,
+      cantidadTotalProductos,
+      id_usuario,
+      metodoPago,
+      productos,
+    } = req.body;
+
+    if (!productos || productos.length === 0) {
       return res
         .status(400)
-        .json({ success: false, message: "El ID de la boleta es necesario" });
-    }
-    const [results] = await db.query("SELECT * FROM boleta WHERE id = ?", [
-      id_boleta,
-    ]);
-    console.log("RESULTADO: ", results);
-    if (results.length > 0) {
-      const ticketData = results[0];
-      return res.json({ success: true, ticketData });
-    } else {
-      return res.json({ success: false, message: "Boleta no encontrada" });
-    }
-  } catch (err) {
-    return res.status(500).json({
-      success: false,
-      message: "Error al conectar a la base de datos",
-    });
-  }
-});
-
-router.post("/generarCalculation", async (req, res) => {
-  try {
-    const productos = req.body;
-
-    if (!Array.isArray(productos) || productos.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "No se proporcionaron productos para generar el cálculo de venta",
-      });
+        .json({ success: false, message: "Faltan datos de la boleta" });
     }
 
-    let totalGeneral = 0;
-    const detalles = productos.map((producto) => {
-      const { id_producto, monto_unitario_cobrado, cantidad } = producto;
-      const totalProducto = monto_unitario_cobrado * cantidad;
-      totalGeneral += totalProducto;
+    // 🔄 Iniciar transacción
+    await connection.beginTransaction();
 
-      return {
-        id_producto,
-        monto_unitario_cobrado,
-        cantidad,
-        totalProducto,
-      };
-    });
-
-    const ticket = {
-      detalles,
-      totalGeneral,
-    };
-    return res.status(201).json({ success: true, ticket });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-router.post("/generateTicket", async (req, res) => {
-  const venta = req.body;
-  console.log("VENTA EN BACK: ", venta);
-
-  try {
-    // 1. Verificar usuario
-    const [usuario] = await db.query("SELECT * FROM usuario WHERE id = ?", [
-      venta.idUsuario,
-    ]);
-
-    if (!usuario || usuario.length === 0) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Usuario no encontrado." });
-    }
-
-    // 2. Registrar la boleta
-    const [resultBoleta] = await db.query(
-      "INSERT INTO boleta (id_cliente, valor_total, valor_pagado, cantidad_total_productos, id_usuario, metodo_pago, estado) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    // ✅ Insertar Boleta en la Base de Datos
+    const [result] = await connection.query(
+      "INSERT INTO boleta (id_cliente, valor_total, valor_pagado, cantidad_total_productos, id_usuario, metodo_pago, estado) VALUES (?, ?, ?, ?, ?, ?, 1)",
       [
-        venta.idCliente,
-        venta.totalCompra,
-        venta.totalCancelado,
-        venta.cantidadTotalProductos,
-        venta.idUsuario,
-        venta.metodoPago,
-        1,
+        idCliente,
+        totalCompra,
+        totalCancelado,
+        cantidadTotalProductos,
+        id_usuario,
+        metodoPago,
       ]
     );
+    const id_boleta = result.insertId;
+    console.log("✅ Boleta creada con ID:", id_boleta);
 
-    const idBoleta = resultBoleta.insertId; // ID de la boleta registrada
+    // ✅ Procesar Productos en la Boleta
+    for (const producto of productos) {
+      console.log("📦 Procesando Producto:", producto);
+      const { id, cantidad, montoUnitario, origen } = producto;
+      const tablaOrigen = origen === "2" ? "productoparque" : "productobodega";
+      console.log("📦 Producto en:", tablaOrigen);
+      // ✅ Verificar el Stock Actual
+      const [stockActual] = await connection.query(
+        `SELECT stock FROM ${tablaOrigen} WHERE id = ?`,
+        [id]
+      );
 
-    // 3. Procesar cada producto en la venta
-    for (const producto of venta.productos) {
-      await db.query(
+      if (stockActual.length === 0) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Producto con ID ${id} no encontrado en ${origen}`,
+        });
+      }
+
+      const stockDisponible = stockActual[0].stock;
+
+      if (cantidad > stockDisponible) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Stock insuficiente para el producto ID ${id} en ${origen}. Disponible: ${stockDisponible}, solicitado: ${cantidad}`,
+        });
+      }
+
+      // ✅ Insertar en `productoboleta`
+      await connection.query(
         "INSERT INTO productoboleta (id_producto, id_boleta, cantidad, monto_unitario_cobrado, origen) VALUES (?, ?, ?, ?, ?)",
-        [
-          producto.id,
-          idBoleta,
-          producto.cantidad,
-          producto.montoUnitario,
-          producto.origen,
-        ]
+        [id, id_boleta, cantidad, montoUnitario, origen]
       );
 
-      let stockQuery = "";
-      let updateStockQuery = "";
+      // ✅ Actualizar el Stock
+      const nuevoStock = stockDisponible - cantidad;
+      await connection.query(
+        `UPDATE ${tablaOrigen} SET stock = ? WHERE id = ?`,
+        [nuevoStock, id]
+      );
 
-      if (producto.origen === 1) {
-        stockQuery = "SELECT stock FROM productobodega WHERE id = ?";
-        updateStockQuery = "UPDATE productobodega SET stock = ? WHERE id = ?";
-      } else if (producto.origen === 2) {
-        stockQuery = "SELECT stock FROM productoparque WHERE id = ?";
-        updateStockQuery = "UPDATE productoparque SET stock = ? WHERE id = ?";
-      } else {
-        return res.status(400).json({
-          success: false,
-          message: `Origen del producto inválido para el producto ID ${producto.id}.`,
-        });
-      }
+      console.log("🔻 Nuevo stock en", origen, ":", nuevoStock);
 
-      // 4. Consultar el stock actual según el origen
-      const [productoData] = await db.query(stockQuery, [producto.id]);
-
-      if (!productoData || productoData.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: `Producto con ID ${producto.id} no encontrado en la tabla correspondiente.`,
-        });
-      }
-
-      const stockActual = productoData[0].stock;
-      const nuevoStock = stockActual - producto.cantidad;
-
-      // 5. Verificar si hay stock suficiente
-      if (nuevoStock < 0) {
-        return res.status(400).json({
-          success: false,
-          message: `Stock insuficiente para el producto ${
-            producto.nombre
-          } en la ubicación ${producto.origen === 1 ? "Bodega" : "Parque"}.`,
-        });
-      }
-
-      // 6. Actualizar el stock en la tabla correspondiente
-      await db.query(updateStockQuery, [nuevoStock, producto.id]);
-    }
-
-    // 7. Si hay deuda, registrarla
-    if (venta.totalCancelado < venta.totalCompra) {
-      const montoDeuda = venta.totalCompra - venta.totalCancelado;
-
-      await db.query(
-        "INSERT INTO deudacliente (id_boleta, monto_deuda) VALUES (?, ?)",
-        [idBoleta, montoDeuda]
+      // ✅ Registrar Egreso en `movimientosproductos`
+      await connection.query(
+        "INSERT INTO movimientosproductos (id_producto, tipo_movimiento, cantidad, origen) VALUES (?, 'venta', ?, ?)",
+        [id, cantidad, origen]
       );
     }
+
+    // ✅ Verificar si se debe Registrar una Deuda
+    if (totalCancelado < totalCompra) {
+      const montoDeuda = totalCompra - totalCancelado;
+      console.log("⚠️ Registrando deuda de:", montoDeuda);
+
+      await connection.query(
+        "INSERT INTO deudacliente (id_boleta, monto_deuda, estado, monto_deuda_inicial) VALUES (?, ?, 'pendiente', ?)",
+        [id_boleta, montoDeuda, montoDeuda]
+      );
+
+      console.log("✅ Deuda registrada correctamente en `deudacliente`");
+    }
+
+    // 🔄 Confirmar Transacción
+    await connection.commit();
 
     return res.status(201).json({
       success: true,
-      message: "Venta registrada correctamente y stock actualizado.",
-      idBoleta: idBoleta, // ✅ Retornamos el ID de la boleta generada
+      message: "Boleta creada correctamente",
+      idBoleta: id_boleta,
     });
   } catch (err) {
-    console.error("Error al registrar la venta:", err);
+    console.error("❌ Error en /createBoleta:", err);
+
+    await connection.rollback(); // ❌ Revertir cambios en caso de error
+    return res.status(500).json({ success: false, message: err.message });
+  } finally {
+    connection.release(); // ✅ Liberar conexión
+  }
+});
+
+// 📌 Registrar un Pago Completo de una Deuda
+router.post("/registrarPagoTotal", async (req, res) => {
+  try {
+    console.log("📌 Registrando pago total:", req.body);
+
+    const { idDeuda, metodoPago, idUsuario } = req.body;
+
+    if (!idDeuda || !metodoPago || !idUsuario) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Faltan datos obligatorios" });
+    }
+
+    // ✅ Obtener la deuda
+    const [deuda] = await db.query(
+      "SELECT monto_deuda FROM deudacliente WHERE id = ?",
+      [idDeuda]
+    );
+
+    if (deuda.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No se encontró una deuda pendiente con el ID proporcionado",
+      });
+    }
+
+    const montoDeuda = deuda[0].monto_deuda;
+
+    // ✅ Registrar el pago en pagodeuda
+    await db.query(
+      "INSERT INTO pagodeuda (id_deudaCliente, metodo_pago, monto_abonado, id_usuario) VALUES (?, ?, ?, ?)",
+      [idDeuda, metodoPago, montoDeuda, idUsuario]
+    );
+
+    // ✅ Marcar la deuda como pagada
+    await db.query(
+      "UPDATE deudacliente SET monto_deuda = 0, estado = 'pagada' WHERE id = ?",
+      [idDeuda]
+    );
+
+    console.log("✅ Pago total registrado correctamente");
+
+    return res.status(201).json({
+      success: true,
+      message: "Pago total registrado correctamente",
+    });
+  } catch (err) {
+    console.error("❌ Error en /registrarPagoTotal:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.get("/listAll", async (req, res) => {
+// 📌 Registrar un Pago Parcial de una Deuda
+router.post("/registrarPagoParcial", async (req, res) => {
   try {
-    const query = `
-            SELECT pb.*, p.nombre AS nombre_producto 
-            FROM productoboleta pb
-            JOIN producto p ON pb.id_producto = p.id
-        `;
+    console.log("📌 Registrando pago parcial:", req.body);
 
-    const [results] = await db.query(query);
+    const { idDeuda, metodoPago, monto, idUsuario } = req.body;
 
-    if (results.length > 0) {
-      return res.json({ success: true, productData: results });
-    } else {
-      return res.json({
+    if (!idDeuda || !metodoPago || !monto || !idUsuario) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Faltan datos obligatorios" });
+    }
+
+    // ✅ Obtener la deuda
+    const [deuda] = await db.query(
+      "SELECT monto_deuda FROM deudacliente WHERE id = ? AND estado = 'pendiente'",
+      [idDeuda]
+    );
+
+    if (deuda.length === 0) {
+      return res.status(404).json({
         success: false,
-        message: "No se encontraron productos",
+        message: "No se encontró una deuda pendiente con el ID proporcionado",
       });
     }
+
+    const montoDeuda = deuda[0].monto_deuda;
+    const nuevoMontoDeuda = montoDeuda - monto;
+
+    // ✅ Registrar el pago en pagodeuda
+    await db.query(
+      "INSERT INTO pagodeuda (id_deudaCliente, metodo_pago, monto_abonado, id_usuario) VALUES (?, ?, ?, ?)",
+      [idDeuda, metodoPago, monto, idUsuario]
+    );
+
+    // ✅ Si el pago cubre toda la deuda, actualizar el estado a "pagada"
+    if (nuevoMontoDeuda <= 0) {
+      await db.query("UPDATE deudacliente SET estado = 'pagada' WHERE id = ?", [
+        idDeuda,
+      ]);
+    } else {
+      await db.query("UPDATE deudacliente SET monto_deuda = ? WHERE id = ?", [
+        nuevoMontoDeuda,
+        idDeuda,
+      ]);
+    }
+
+    console.log("✅ Pago parcial registrado correctamente");
+
+    return res.status(201).json({
+      success: true,
+      message: "Pago parcial registrado correctamente",
+    });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error("❌ Error en /registrarPagoParcial:", err);
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.get("/listAllTicket", async (req, res) => {
+// 📌 Eliminar una Boleta (Devolver Productos y Restaurar Stock)
+router.delete("/deleteBoleta/:id", async (req, res) => {
   try {
+    console.log("🚀 Eliminando Boleta:");
+    const { id } = req.params;
+
+    if (!id) {
+      return res
+        .status(400)
+        .json({ success: false, message: "ID de boleta requerido" });
+    }
+
+    // ✅ Obtener productos asociados a la boleta
+    const [productos] = await db.query(
+      "SELECT id_producto, cantidad, origen FROM productoboleta WHERE id_boleta = ?",
+      [id]
+    );
+
+    // ✅ Devolver stock a su origen
+    for (const producto of productos) {
+      const { id_producto, cantidad, origen } = producto;
+      const tablaOrigen =
+        origen === "parque" ? "productoparque" : "productobodega";
+
+      const [stockActual] = await db.query(
+        `SELECT stock FROM ${tablaOrigen} WHERE id = ?`,
+        [id_producto]
+      );
+
+      if (stockActual.length > 0) {
+        const nuevoStock = stockActual[0].stock + cantidad;
+        await db.query(`UPDATE ${tablaOrigen} SET stock = ? WHERE id = ?`, [
+          nuevoStock,
+          id_producto,
+        ]);
+
+        // ✅ Registrar Ingreso en movimientosproductos
+        await db.query(
+          "INSERT INTO movimientosproductos (id_producto, tipo_movimiento, cantidad, origen) VALUES (?, 'ingreso', ?, ?)",
+          [id_producto, cantidad, origen]
+        );
+      }
+    }
+
+    // ✅ Eliminar productos de productoboleta y la boleta en sí
+    await db.query("DELETE FROM productoboleta WHERE id_boleta = ?", [id]);
+    await db.query("DELETE FROM boleta WHERE id = ?", [id]);
+
+    return res.json({
+      success: true,
+      message: "Boleta eliminada correctamente y stock restaurado",
+    });
+  } catch (err) {
+    console.error("❌ Error en /deleteBoleta:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 📌 Obtener Todas las Deudas
+router.get("/listDeudas", async (req, res) => {
+  try {
+    console.log("📌 Listando todas las deudas:");
+
     const query = `
-            SELECT b.*, c.nombre, c.apellido, u.nombre_usuario 
-            FROM boleta b
-            JOIN cliente c ON b.id_cliente = c.id 
-            JOIN usuario u ON b.id_usuario = u.id 
-        `;
+      SELECT 
+        dc.id,
+        dc.id_boleta,
+        dc.monto_deuda,
+        dc.createdAt,
+        dc.updatedAt,
+        dc.estado,
+        dc.monto_deuda_inicial,
+        c.nombre AS nombre_cliente,
+        c.apellido AS apellido_cliente,
+        u.nombre_usuario,
+        (SELECT COUNT(*) FROM pagodeuda pd WHERE pd.id_deudaCliente = dc.id) > 0 AS tienePagos
+      FROM deudacliente dc
+      JOIN boleta b ON dc.id_boleta = b.id
+      JOIN cliente c ON b.id_cliente = c.id
+      JOIN usuario u ON b.id_usuario = u.id
+      ORDER BY dc.createdAt DESC
+    `;
 
     const [results] = await db.query(query);
 
-    if (results.length > 0) {
-      return res.json({ success: true, ventasData: results });
-    } else {
-      return res.json({ success: false, message: "No se encontraron ventas" });
-    }
+    return res.json({ success: true, data: results });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error("❌ Error en /listDeudas:", err);
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.get("/getFindOne/:id", async (req, res) => {
+// 📌 Obtener Pagos de una Deuda Específica
+router.get("/obtenerPagosDeuda/:idDeuda", async (req, res) => {
+  try {
+    const { idDeuda } = req.params;
+    console.log(`📌 Obteniendo pagos de la deuda ID: ${idDeuda}`);
+
+    if (!idDeuda) {
+      return res.status(400).json({
+        success: false,
+        message: "ID de deuda requerido",
+      });
+    }
+
+    const query = `
+      SELECT 
+        pd.id AS id_pago, 
+        pd.id_deudaCliente AS id_deuda, 
+        pd.metodo_pago, 
+        pd.monto_abonado, 
+        pd.createdAt AS fecha_pago, 
+        u.nombre_usuario 
+      FROM pagodeuda pd
+      JOIN usuario u ON pd.id_usuario = u.id
+      WHERE pd.id_deudaCliente = ?
+      ORDER BY pd.createdAt DESC
+    `;
+
+    const [results] = await db.query(query, [idDeuda]);
+
+    return res.json({ success: true, data: results });
+  } catch (err) {
+    console.error("❌ Error en /obtenerPagosDeuda:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 📌 Obtener todas las Boletas con información del Cliente y Usuario
+router.get("/listBoletas", async (req, res) => {
+  try {
+    console.log("📌 Listando todas las boletas:");
+
+    const query = `
+      SELECT 
+        b.id AS id_boleta, 
+        COALESCE(c.nombre, 'Venta Al Detalle') AS nombre_cliente, 
+        COALESCE(c.apellido, '') AS apellido_cliente, 
+        u.nombre_usuario, 
+        b.metodo_pago, 
+        b.valor_pagado, 
+        b.valor_total,
+        b.createdAt AS fecha
+      FROM boleta b
+      LEFT JOIN cliente c ON b.id_cliente = c.id  -- 🔹 Permite que el cliente sea NULL
+      JOIN usuario u ON b.id_usuario = u.id
+      ORDER BY b.createdAt DESC
+    `;
+
+    const [results] = await db.query(query);
+
+    return res.json({ success: true, data: results });
+  } catch (err) {
+    console.error("❌ Error en /listBoletas:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 📌 Obtener Detalle de una Boleta
+router.get("/boleta/:id", async (req, res) => {
   try {
     const { id } = req.params;
     console.log("🔍 Buscando boleta con ID:", id); // 📌 Debug
 
-    const boletaQuery = `SELECT * FROM boleta WHERE id = ?`;
+    // ✅ Obtener información completa de la boleta, incluyendo cliente (opcional) y usuario
+    const boletaQuery = `
+      SELECT 
+        b.id AS id_boleta,
+        b.valor_total, 
+        b.valor_pagado, 
+        b.metodo_pago, 
+        b.cantidad_total_productos, 
+        b.estado,
+        b.createdAt AS fecha_boleta,
+        c.id AS id_cliente, 
+        COALESCE(c.nombre, 'Sin Cliente') AS nombre_cliente, 
+        COALESCE(c.apellido, '') AS apellido_cliente, 
+        COALESCE(c.rut, 'No registrado') AS rut_cliente, 
+        COALESCE(c.telefono, 'No disponible') AS telefono_cliente, 
+        COALESCE(c.correo, 'No disponible') AS correo_cliente,
+        u.id AS id_usuario, 
+        u.nombre_usuario
+      FROM boleta b
+      LEFT JOIN cliente c ON b.id_cliente = c.id
+      JOIN usuario u ON b.id_usuario = u.id
+      WHERE b.id = ?
+    `;
+
     const [boletaResult] = await db.query(boletaQuery, [id]);
 
     if (boletaResult.length === 0) {
@@ -232,213 +431,83 @@ router.get("/getFindOne/:id", async (req, res) => {
         .json({ success: false, message: "Boleta no encontrada" });
     }
 
-    const productosQuery = `SELECT * FROM productoboleta WHERE id_boleta = ?`;
+    // ✅ Obtener información detallada de los productos en la boleta
+    const productosQuery = `
+      SELECT 
+        pb.id_producto, 
+        COALESCE(p.nombre, 'Producto desconocido') AS nombre_producto, 
+        pb.cantidad, 
+        pb.monto_unitario_cobrado, 
+        pb.origen, 
+        CASE 
+          WHEN pb.origen = 1 THEN 'Bodega'
+          WHEN pb.origen = 2 THEN 'Parque'
+          ELSE 'Desconocido' 
+        END AS origen_nombre
+      FROM productoboleta pb
+      LEFT JOIN productobodega p ON pb.id_producto = p.id
+      WHERE pb.id_boleta = ?
+    `;
+
     const [productosResult] = await db.query(productosQuery, [id]);
 
     const response = {
-      boleta: boletaResult[0],
-      productos: productosResult,
+      boleta: boletaResult[0], // ✅ Información de la boleta, cliente y usuario
+      productos: productosResult, // ✅ Información detallada de los productos
     };
 
     console.log("✅ Respuesta de la API:", response); // 📌 Debug
-
     return res.status(200).json({ success: true, data: response });
   } catch (err) {
-    console.error("❌ Error en getFindOne:", err);
+    console.error("❌ Error en /boleta/:id:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.get("/getDeudaVenta/:id", async (req, res) => {
+// 📌 Obtener deuda por ID de Boleta
+router.get("/deudaPorBoleta/:idBoleta", async (req, res) => {
   try {
-    const { id } = req.params;
-    console.log("ID: ", id);
-    if (!id) {
-      return res
-        .status(400)
-        .json({ success: false, message: "El ID de la boleta es necesario" });
-    }
-    const [results] = await db.query(
-      "SELECT * FROM deudacliente WHERE id_boleta = ?",
-      [id]
-    );
-    console.log("RESULTADO: ", results);
-    if (results.length > 0) {
-      const deudaCliente = results[0];
-      return res.json({ success: true, deudaCliente });
-    } else {
-      return res.json({ success: false, message: "Deuda no encontrada" });
-    }
-  } catch (err) {
-    return res.status(500).json({
-      success: false,
-      message: "Error al conectar a la base de datos",
-    });
-  }
-});
+    const { idBoleta } = req.params;
+    console.log(`📌 Buscando deuda para la boleta ID: ${idBoleta}`);
 
-router.put("/delete", async (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) {
-      return res
-        .status(400)
-        .json({ success: false, message: "El id de la boleta es requerido" });
+    if (!idBoleta) {
+      return res.status(400).json({
+        success: false,
+        message: "ID de boleta requerido",
+      });
     }
-    const estado = 0;
-    const query = "UPDATE productoboleta SET estado = ? WHERE id = ?";
-    await db.query(query, [estado, id]);
 
-    return res.json({ success: true, message: "Boleta anulada exitosamente" });
+    const query = `
+      SELECT 
+        dc.id AS id_deuda, 
+        dc.id_boleta, 
+        dc.monto_deuda, 
+        dc.monto_deuda_inicial, 
+        dc.estado, 
+        dc.createdAt AS fecha_deuda,
+        c.nombre AS nombre_cliente,
+        c.apellido AS apellido_cliente,
+        u.nombre_usuario
+      FROM deudacliente dc
+      JOIN boleta b ON dc.id_boleta = b.id
+      JOIN cliente c ON b.id_cliente = c.id
+      JOIN usuario u ON b.id_usuario = u.id
+      WHERE dc.id_boleta = ?
+    `;
+
+    const [results] = await db.query(query, [idBoleta]);
+
+    if (results.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No se encontró deuda asociada a esta boleta",
+      });
+    }
+
+    return res.json({ success: true, data: results[0] });
   } catch (err) {
+    console.error("❌ Error en /deudaPorBoleta:", err);
     return res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-router.post("/productEntry", async (req, res) => {
-  try {
-    const { id_producto, cantidad, id_usuario } = req.body;
-    if (!id_producto || !cantidad || !id_usuario) {
-      return res.status(400).json({ success: false, message: "Faltan datos" });
-    }
-    const [results] = await db.query(
-      "SELECT stock, estado FROM producto WHERE id = ?",
-      [id_producto]
-    );
-    if (results.length > 0) {
-      const { stock: stockActual, estado } = results[0];
-      if (estado === 1) {
-        const nuevoStock = stockActual + cantidad;
-        await db.query("UPDATE producto SET stock = ? WHERE id = ?", [
-          nuevoStock,
-          id_producto,
-        ]);
-        await db.query(
-          "INSERT INTO ingresoproductos (id_producto, cantidad, id_usuario) VALUES (?, ?, ?)",
-          [id_producto, cantidad, id_usuario]
-        );
-
-        return res
-          .status(201)
-          .json({ success: true, message: "Ingreso registrado exitosamente" });
-      } else {
-        return res.status(403).json({
-          success: false,
-          message: "El producto no está disponible para ingreso",
-        });
-      }
-    } else {
-      return res
-        .status(404)
-        .json({ success: false, message: "Producto no encontrado" });
-    }
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-router.get("/listProductEntry", async (req, res) => {
-  try {
-    const query = `
-            SELECT 
-                ip.id, 
-                ip.cantidad, 
-                p.nombre AS nombre_producto, 
-                u.nombre_usuario 
-            FROM ingresoproductos ip
-            JOIN producto p ON ip.id_producto = p.id
-            JOIN usuario u ON ip.id_usuario = u.id
-        `;
-
-    const [results] = await db.query(query);
-
-    if (results.length > 0) {
-      return res.json({ success: true, data: results });
-    } else {
-      return res.json({
-        success: false,
-        message: "No se encontraron registros",
-      });
-    }
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-router.get("/productTicketRange", async (req, res) => {
-  try {
-    const { desde, hasta } = req.body;
-    if (!desde || !hasta) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Faltan las fechas desde y hasta" });
-    }
-    const desdeFecha = `${desde} 00:00:00`;
-    const hastaFecha = `${hasta} 23:59:59`;
-    const query = `
-            SELECT 
-                pb.id_producto, 
-                pb.cantidad, 
-                pb.monto_unitario_cobrado, 
-                p.nombre AS nombre_producto
-            FROM productoboleta pb
-            JOIN producto p ON pb.id_producto = p.id
-            WHERE pb.createdAt >= ? AND pb.createdAt <= ?
-        `;
-
-    const [results] = await db.query(query, [desdeFecha, hastaFecha]);
-
-    if (results.length > 0) {
-      return res.json({ success: true, data: results });
-    } else {
-      return res.json({
-        success: false,
-        message: "No se encontraron registros en el rango de fechas dado",
-      });
-    }
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-router.get("/productTicketIdRange", async (req, res) => {
-  try {
-    const { id_producto, desde, hasta } = req.body;
-    if (!desde || !hasta || !id_producto) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Faltan datos para la consulta" });
-    }
-    const desdeFecha = `${desde} 00:00:00`;
-    const hastaFecha = `${hasta} 23:59:59`;
-    const query = `
-            SELECT 
-                pb.id_producto, 
-                pb.cantidad, 
-                pb.monto_unitario_cobrado, 
-                p.nombre AS nombre_producto
-            FROM productoboleta pb
-            JOIN producto p ON pb.id_producto = p.id
-            WHERE pb.createdAt >= ? AND pb.createdAt <= ?
-            AND p.id = ?
-        `;
-
-    const [results] = await db.query(query, [
-      desdeFecha,
-      hastaFecha,
-      id_producto,
-    ]);
-
-    if (results.length > 0) {
-      return res.json({ success: true, data: results });
-    } else {
-      return res.json({
-        success: false,
-        message: "No se encontraron registros en el rango de fechas dado",
-      });
-    }
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
   }
 });
 
